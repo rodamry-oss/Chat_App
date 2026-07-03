@@ -1,7 +1,10 @@
+import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jose import jwt, JWTError
+from pydantic import ValidationError
 from app.websocket.manager import manager
 from app.core.security import SECRET_KEY, ALGORITHM
+from app.schemas.ws import IncomingMessage
 
 router = APIRouter()
 
@@ -27,29 +30,24 @@ async def chat(ws: WebSocket):
         return
 
     await ws.accept()
-
     await manager.connect(username, ws)
 
     try:
         while True:
-            data = await ws.receive_text()
+            raw = await ws.receive_text()
 
             try:
-                to_user, message = data.split(":", 1)
-            except ValueError:
-                await ws.send_text("format: username:message")
+                msg = IncomingMessage.model_validate_json(raw)
+            except ValidationError:
+                await ws.send_json({"error": "expected {to, body}"})
                 continue
 
-            if to_user not in manager.active_connections:
-                await ws.send_text(f"{to_user} Offline")
+            if msg.to not in manager.active_connections:
+                await ws.send_json({"error": f"{msg.to} offline"})
                 continue
 
-            await manager.send_private(
-                to_user,
-                f"(Private) {username}: {message}"
-            )
-
-            await ws.send_text(f"You → {to_user}: {message}")
+            await manager.send_private(msg.to, {"from": username, "body": msg.body})
+            await ws.send_json({"to": msg.to, "body": msg.body})
 
     except WebSocketDisconnect:
         manager.disconnect(username)
